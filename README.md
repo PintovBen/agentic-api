@@ -11,6 +11,12 @@ Generate high-quality Python API clients from Swagger/OpenAPI documentation usin
 - **🧪 Auto-Testing**: Validates generated code with comprehensive quality scoring
 - **🚀 Ready to Use**: Produces API clients you can use immediately
 
+## 📋 Prerequisites
+
+- Docker and Docker Compose
+- OpenAI API key
+- Swagger.json URL (not YAML or other formats)
+
 ## 🚀 Quick Start Guide
 
 ### Step 1: Clone and Setup
@@ -59,22 +65,6 @@ The generated Python client will appear in your current directory with:
 - Async/await support  
 - Type hints
 - Error handling
-
-## 📋 Prerequisites
-
-- Docker and Docker Compose
-- OpenAI API key
-- Swagger.json URL (not YAML or other formats)
-
-## 🎯 Example Usage
-
-```bash
-# Popular APIs that work great:
-make generate URL=https://petstore.swagger.io/v2/swagger.json
-make generate URL=https://cve.circl.lu/api/swagger.json 
-
-# The generated client will be saved as a Python file in your current directory
-```
 
 ## 🛠️ Available Commands
 
