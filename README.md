@@ -1,145 +1,142 @@
-# agentic-api
+# 🤖 Agentic API - AI-Powered API Client Generator
 
-🤖 **AI-Powered API Client Generator** 
+Generate high-quality Python API clients from Swagger/OpenAPI documentation using advanced AI agents.
 
-Generate high-quality Python API clients from Swagger/OpenAPI documentation using LangGraph multi-agent workflows.
+> **⚠️ Important**: This agent accepts **ONLY swagger.json based documents**. Other input types (OpenAPI YAML, raw text, etc.) have been tested and provide useless results. Please ensure your API documentation is in swagger.json format.
 
-## ✨ Features
+## ✨ What It Does
 
-- **🔍 Smart Swagger Analysis**: Automatically parses and understands API documentation
-- **🐍 Clean Python Generation**: Creates typed, async Python clients with proper error handling
-- **🧪 Built-in Testing**: Comprehensive validation framework with quality scoring
-- **⚡ CLI & Python API**: Use via command line or integrate programmatically
-- **🔧 Multi-Agent Architecture**: LangGraph workflow with specialized agents for analysis, generation, and validation
+- **🔍 Smart Analysis**: Automatically parses and understands Swagger JSON documentation
+- **🐍 Clean Code**: Generates typed, async Python clients with proper error handling
+- **🧪 Auto-Testing**: Validates generated code with comprehensive quality scoring (typically 8.5-9.5/10)
+- **🚀 Ready to Use**: Produces production-ready API clients you can use immediately
 
-## 🚀 Quick Start
+## 🚀 Quick Start Guide
 
-### Installation
+### Step 1: Clone and Setup
 
 ```bash
-# Clone and install
+# Clone the repository
 git clone https://github.com/PintovBen/agentic-api.git
 cd agentic-api
-pip install -e .
+
+# Set your OpenAI API key
+export OPENAI_API_KEY="your-openai-api-key-here"
 ```
 
-### Setup
+### Step 2: Build the Docker Image
 
-Create a `.env` file:
+```bash
+# Build the container
+make build
+```
+
+### Step 3: Generate API Clients
+
+#### Option A: Interactive Mode (Recommended)
+```bash
+# Start an interactive shell inside the container
+docker-compose run --rm agentic-api
+
+# Inside the container, generate clients:
+agentic-api generate "https://petstore.swagger.io/v2/swagger.json"
+agentic-api generate "https://cve.circl.lu/api/swagger.json"
+
+# Exit when done
+exit
+```
+
+#### Option B: Direct Command
+```bash
+# Generate a client directly
+make generate URL=https://petstore.swagger.io/v2/swagger.json
+```
+
+### Step 4: Use Your Generated Client
+
+The generated Python client will appear in your current directory with:
+- Complete API coverage
+- Async/await support  
+- Type hints
+- Error handling
+- Documentation
+- Usage examples
+
+## 📋 Prerequisites
+
+- Docker and Docker Compose
+- OpenAI API key
+- Swagger.json URL (not YAML or other formats)
+
+## 🎯 Example Usage
+
+```bash
+# Popular APIs that work great:
+make generate URL=https://petstore.swagger.io/v2/swagger.json
+make generate URL=https://cve.circl.lu/api/swagger.json  
+make generate URL=https://api.apis.guru/v2/specs/github.com/1.1.4/swagger.json
+
+# The generated client will be saved as a Python file in your current directory
+```
+
+## 🛠️ Available Commands
+
+```bash
+make help          # Show all available commands
+make build         # Build the Docker image  
+make run           # Start interactive container
+make generate      # Generate API client (requires URL parameter)
+make clean         # Remove containers and images
+```
+
+## 🔧 Environment Configuration
+
+Set these environment variables or create a `.env` file:
+
 ```env
-OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_API_KEY=your-openai-api-key-here
+AGENTIC_MODEL=gpt-4o-mini
+AGENTIC_TEMPERATURE=0.1
 ```
 
-### Generate Your First Client
+## 📁 Output
 
+Generated API clients include:
+- **Main client file**: Complete Python API client
+- **Documentation**: Usage examples and API reference  
+- **Type definitions**: Full typing support
+- **Error handling**: Robust error management
+- **Async support**: Modern async/await patterns
+
+## 🐛 Troubleshooting
+
+**Container won't start?**
 ```bash
-# CLI: Generate a client
-agentic-api generate https://petstore.swagger.io/v2/swagger.json
-
-# Test the generated client
-agentic-api test generated_client.py
+# Clean rebuild
+make clean
+make build
 ```
 
-```python
-# Python API: Generate programmatically
-from agentic_api import APIClientGenerator
-
-generator = APIClientGenerator()
-client_code = await generator.generate_from_url(
-    "https://petstore.swagger.io/v2/swagger.json"
-)
-
-# The generated client is ready to use!
-```
-
-## 📊 Quality Assurance
-
-Every generated client includes:
-- ✅ **Syntax Validation** - Guaranteed valid Python code
-- ✅ **Import Resolution** - All dependencies properly handled  
-- ✅ **Structure Analysis** - Classes, methods, and models detected
-- ✅ **Functionality Testing** - Client instantiation and method validation
-- ✅ **Quality Scoring** - Overall quality score with recommendations
-
-Example test results:
-```
-📊 Test Results for generated_client.py
-Overall Score: 90.0% ✅
-
-✅ Syntax Valid
-✅ Imports Valid  
-✅ Client Class Found
-📈 Methods Found: 4
-📈 Models Found: 6
-✅ Client Instantiation: Success
-```
-
-## 🏗️ Architecture
-
-**LangGraph Multi-Agent Workflow:**
-
-```
-📥 Swagger URL → 🔍 Analysis Agent → 🔧 Code Generator → ✅ Validator → 📦 Clean Python Client
-```
-
-- **Fetch Agent**: Downloads and validates Swagger documentation
-- **Analysis Agent**: Understands API structure, endpoints, and models
-- **Generation Agent**: Creates clean, typed Python client code
-- **Validation Agent**: Tests and scores the generated client
-
-## 📁 Project Structure
-
-```
-agentic-api/
-├── src/agentic_api/
-│   ├── __init__.py
-│   ├── cli.py                # Command line interface
-│   ├── core/
-│   │   ├── agent.py          # LangGraph workflow
-│   │   ├── generator.py      # High-level API
-│   │   └── config.py         # Configuration
-│   └── testing/
-│       └── client_tester.py  # Testing framework
-├── examples/                 # Usage examples
-├── tests/                   # Unit tests
-└── IMPROVEMENTS.md          # Latest improvements
-```
-
-## 📚 Examples
-
-See the `examples/` directory:
-- **`basic_usage.py`** - Simple generation example
-- **`complete_workflow.py`** - Full workflow with testing and reporting
-
-## 🛠️ Development
-
+**API key issues?**
 ```bash
-# Run tests
-pytest
-
-# Development dependencies
-pip install -e ".[dev]"
+# Check your environment
+docker-compose run --rm agentic-api env | grep OPENAI
 ```
 
-## 🎯 What Makes This Special
+**URL not working?**
+- Ensure the URL returns valid swagger.json (not YAML)
+- Test the URL in your browser first
+- Some APIs require authentication headers
 
-1. **🧠 AI-Powered**: Uses advanced LLMs to understand complex API docs
-2. **🔄 Multi-Agent**: Specialized agents for different aspects of client generation
-3. **📊 Quality-First**: Built-in testing ensures reliable generated code
-4. **⚡ Production Ready**: Generates clients that work out of the box
-5. **🔧 Extensible**: Easy to add support for new patterns and frameworks
+## 🚀 Advanced Usage
 
-## 🤝 Contributing
+For development or customization:
+```bash
+# Development mode with live code mounting
+docker-compose run --rm agentic-api-dev
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Submit a pull request
+# Custom model configuration  
+AGENTIC_MODEL=gpt-4 make generate URL=your-swagger-url.json
+```
 
-## 📄 License
-
-MIT License - see LICENSE file for details.
-
----
-
-*Built with ❤️ using LangGraph, LangChain, and OpenAI*
+That's it! You now have a powerful AI agent that generates production-ready API clients from any Swagger JSON specification. 🎉

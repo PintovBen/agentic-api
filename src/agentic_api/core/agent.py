@@ -1,6 +1,7 @@
 """Main LangGraph agent for API client generation."""
 
 import json
+import logging
 import re
 from typing import Any, Dict, List, TypedDict
 
@@ -9,6 +10,16 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 
 from agentic_api.core.config import AgentConfig
+
+# Configure logging for clean, pretty output
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s',  # Clean format without timestamps/levels
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
@@ -36,386 +47,437 @@ class APIGenerationAgent:
             max_tokens=config.max_tokens,
         )
         self.graph = self._create_graph()
+        
+        # Setup clean logging
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        self.logger.setLevel(logging.INFO)
+        
+        # Ensure clean console output
+        if not self.logger.handlers:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            formatter = logging.Formatter('%(message)s')  # Clean format
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+            self.logger.propagate = False  # Prevent duplicate messages
     
     def _create_graph(self) -> StateGraph:
-        """Create the LangGraph workflow."""
+        """Create a simplified LangGraph workflow for Swagger/OpenAPI processing."""
         workflow = StateGraph(AgentState)
         
-        # Add nodes
-        workflow.add_node("detect_input_type", self._detect_input_type_node)
-        workflow.add_node("fetch_content", self._fetch_content_node)
-        workflow.add_node("parse_content", self._parse_content_node)
-        workflow.add_node("analyze_api", self._analyze_api_node)
+        # Enhanced workflow with fix step after comprehensive validation
+        workflow.add_node("fetch_swagger", self._fetch_swagger_node)
         workflow.add_node("generate_code", self._generate_code_node)
         workflow.add_node("validate_code", self._validate_code_node)
+        workflow.add_node("validate_against_docs", self._validate_against_docs_node)
+        workflow.add_node("fix_code", self._fix_code_node)
         
-        # Define edges
-        workflow.set_entry_point("detect_input_type")
-        workflow.add_edge("detect_input_type", "fetch_content")
-        workflow.add_edge("fetch_content", "parse_content")
-        workflow.add_edge("parse_content", "analyze_api")
-        workflow.add_edge("analyze_api", "generate_code")
+        # Workflow with fix step after all validations
+        workflow.set_entry_point("fetch_swagger")
+        workflow.add_edge("fetch_swagger", "generate_code")
         workflow.add_edge("generate_code", "validate_code")
-        workflow.add_edge("validate_code", END)
+        workflow.add_edge("validate_code", "validate_against_docs")
+        workflow.add_edge("validate_against_docs", "fix_code")
+        workflow.add_edge("fix_code", END)
         
         return workflow.compile()
     
-    async def _detect_input_type_node(self, state: AgentState) -> AgentState:
-        """Detect the type of input source and prepare for processing."""
+    async def _fetch_swagger_node(self, state: AgentState) -> AgentState:
+        """Fetch and parse Swagger/OpenAPI specification from URL."""
         input_source = state["input_source"]
         
-        # Determine input type
-        if input_source.startswith(('http://', 'https://')):
-            if any(keyword in input_source.lower() for keyword in ['swagger', 'openapi', '.json', '.yaml', '.yml']):
-                state["input_type"] = "swagger"
-            else:
-                state["input_type"] = "webpage"
-        elif input_source.endswith(('.json', '.yaml', '.yml')):
-            state["input_type"] = "swagger_file"
-        elif input_source.endswith(('.txt', '.md', '.rst', '.html')):
-            state["input_type"] = "doc_file"
-        elif '\n' in input_source or len(input_source) > 200:  # Likely raw text
-            state["input_type"] = "text"
-            state["raw_content"] = input_source
-        else:
-            # Try to determine if it's a file path
-            from pathlib import Path
-            if Path(input_source).exists():
-                if input_source.endswith(('.json', '.yaml', '.yml')):
-                    state["input_type"] = "swagger_file"
-                else:
-                    state["input_type"] = "doc_file"
-            else:
-                state["input_type"] = "text"
-                state["raw_content"] = input_source
+        self.logger.info("")
+        self.logger.info("🚀 " + "="*70)
+        self.logger.info("🚀 STARTING API CLIENT GENERATION")
+        self.logger.info("🚀 " + "="*70)
+        self.logger.info(f"📡 Fetching API specification from: {input_source}")
         
-        state["messages"].append(
-            HumanMessage(content=f"Detected input type: {state['input_type']} for source: {input_source[:100]}...")
+        try:
+            import httpx
+            
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                response = await client.get(input_source, headers={
+                    'User-Agent': 'Mozilla/5.0 (compatible; AgenticAPI/1.0)',
+                    'Accept': 'application/json, application/yaml, text/yaml, */*'
+                })
+                response.raise_for_status()
+                
+                # Parse based on content type
+                content_type = response.headers.get('content-type', '').lower()
+                
+                if 'json' in content_type or input_source.endswith('.json'):
+                    swagger_content = response.json()
+                elif 'yaml' in content_type or input_source.endswith(('.yaml', '.yml')):
+                    try:
+                        import yaml
+                        swagger_content = yaml.safe_load(response.text)
+                    except ImportError:
+                        state["error"] = "YAML support requires 'pyyaml' package. Install with: pip install pyyaml"
+                        return state
+                else:
+                    # Try JSON first, then YAML
+                    try:
+                        swagger_content = response.json()
+                    except json.JSONDecodeError:
+                        try:
+                            import yaml
+                            swagger_content = yaml.safe_load(response.text)
+                        except (ImportError, Exception) as e:
+                            state["error"] = f"Could not parse content as JSON or YAML from {input_source}: {str(e)}"
+                            return state
+                
+                # Validate it's a valid Swagger/OpenAPI spec
+                if not self._is_valid_swagger_content(swagger_content):
+                    state["error"] = f"Content at {input_source} is not a valid Swagger/OpenAPI specification"
+                    return state
+                
+                # Log overview with nice formatting
+                paths_count = len(swagger_content.get('paths', {}))
+                host = swagger_content.get('host', 'N/A')
+                base_path = swagger_content.get('basePath', 'N/A')
+                title = swagger_content.get('info', {}).get('title', 'Unknown API')
+                version = swagger_content.get('info', {}).get('version', 'Unknown')
+                
+                self.logger.info("✅ Successfully fetched API specification!")
+                self.logger.info("")
+                self.logger.info("📊 API OVERVIEW:")
+                self.logger.info(f"   📝 Title: {title}")
+                self.logger.info(f"   🔢 Version: {version}")
+                self.logger.info(f"   🌐 Host: {host}")
+                self.logger.info(f"   📁 Base Path: {base_path}")
+                self.logger.info(f"   🔗 Endpoints: {paths_count}")
+                self.logger.info("")
+                
+                state["swagger_content"] = swagger_content
+                state["input_type"] = "swagger"
+                state["raw_content"] = response.text
+                
+                state["messages"].append(
+                    HumanMessage(content=f"Successfully fetched Swagger/OpenAPI spec from {input_source}")
+                )
+                
+        except Exception as e:
+            error_msg = f"Failed to fetch Swagger specification: {str(e)}"
+            self.logger.info(f"❌ {error_msg}")
+            state["error"] = error_msg
+            state["messages"].append(
+                HumanMessage(content=f"Error fetching from {input_source}: {str(e)}")
+            )
+        
+        return state
+    
+    def _is_valid_swagger_content(self, content: dict) -> bool:
+        """Validate that content is a proper Swagger/OpenAPI specification."""
+        if not isinstance(content, dict):
+            return False
+        
+        # Check for Swagger 2.0
+        if content.get('swagger') == '2.0' and 'paths' in content:
+            return True
+        
+        # Check for OpenAPI 3.x
+        if (content.get('openapi') and 
+            content.get('openapi').startswith('3.') and 
+            'paths' in content):
+            return True
+        
+        return False
+    
+    async def generate_from_swagger_url(self, swagger_url: str) -> Dict[str, Any]:
+        """Generate API client from Swagger/OpenAPI URL."""
+        initial_state = AgentState(
+            input_source=swagger_url,
+            input_type="",
+            raw_content="",
+            swagger_content={},
+            analysis={},
+            generated_code="",
+            validation_results={},
+            messages=[],
+            error=""
         )
         
-        return state
+        # Run the simplified graph
+        result = await self.graph.ainvoke(initial_state)
+        
+        # Pretty completion summary
+        self._log_completion_summary(result)
+        
+        return {
+            "success": not bool(result.get("error")),
+            "error": result.get("error"),
+            "generated_code": result.get("generated_code", ""),
+            "validation": result.get("validation_results", {}),
+            "swagger_content": result.get("swagger_content", {}),
+            "input_type": result.get("input_type", ""),
+            "messages": [msg.content for msg in result.get("messages", [])]
+        }
     
-    async def _fetch_content_node(self, state: AgentState) -> AgentState:
-        """Fetch content from various sources."""
-        if state.get("error") or state["input_type"] == "text":
-            return state  # Content already in raw_content for text type
+    def _log_completion_summary(self, result: dict):
+        """Log a pretty completion summary."""
+        self.logger.info("🎉 " + "="*70)
+        self.logger.info("🎉 API CLIENT GENERATION COMPLETED")
+        self.logger.info("🎉 " + "="*70)
         
-        input_source = state["input_source"]
-        input_type = state["input_type"]
-        
-        try:
-            if input_type in ["swagger", "webpage"]:
-                # Fetch from URL
-                import httpx
-                
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    response = await client.get(input_source, headers={
-                        'User-Agent': 'Mozilla/5.0 (compatible; AgenticAPI/1.0; +https://github.com/agentic-api)'
-                    })
-                    response.raise_for_status()
-                    
-                    if input_type == "swagger":
-                        # Try to parse as JSON/YAML
-                        content_type = response.headers.get('content-type', '').lower()
-                        if 'json' in content_type:
-                            state["swagger_content"] = response.json()
-                            state["raw_content"] = response.text
-                        elif 'yaml' in content_type or 'yml' in content_type:
-                            try:
-                                import yaml
-                                state["swagger_content"] = yaml.safe_load(response.text)
-                                state["raw_content"] = response.text
-                            except ImportError:
-                                state["raw_content"] = response.text
-                        else:
-                            state["raw_content"] = response.text
-                    else:  # webpage
-                        html_content = response.text
-                        
-                        # Try to use BeautifulSoup if available, otherwise use basic parsing
-                        try:
-                            from bs4 import BeautifulSoup
-                            soup = BeautifulSoup(html_content, 'html.parser')
-                            
-                            # Remove script and style elements
-                            for script in soup(["script", "style"]):
-                                script.decompose()
-                            
-                            # Get text content
-                            text_content = soup.get_text()
-                            
-                            # Clean up whitespace
-                            lines = (line.strip() for line in text_content.splitlines())
-                            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                            clean_text = ' '.join(chunk for chunk in chunks if chunk)
-                            
-                            state["raw_content"] = clean_text
-                        except ImportError:
-                            # Fallback: basic HTML tag removal with regex
-                            import re
-                            # Remove script and style blocks
-                            clean_html = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
-                            clean_html = re.sub(r'<style[^>]*>.*?</style>', '', clean_html, flags=re.DOTALL | re.IGNORECASE)
-                            # Remove HTML tags
-                            clean_text = re.sub(r'<[^>]+>', '', clean_html)
-                            # Clean up whitespace
-                            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-                            
-                            state["raw_content"] = clean_text
-            
-            elif input_type in ["swagger_file", "doc_file"]:
-                # Read from file
-                from pathlib import Path
-                file_path = Path(input_source)
-                
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                
-                state["raw_content"] = content
-                
-                if input_type == "swagger_file":
-                    if file_path.suffix.lower() == '.json':
-                        state["swagger_content"] = json.loads(content)
-                    else:  # YAML
-                        import yaml
-                        state["swagger_content"] = yaml.safe_load(content)
-            
-            state["messages"].append(
-                HumanMessage(content=f"Successfully fetched content from {input_source}")
-            )
-            
-        except Exception as e:
-            state["error"] = f"Failed to fetch content: {str(e)}"
-            state["messages"].append(
-                HumanMessage(content=f"Error fetching content: {str(e)}")
-            )
-        
-        return state
-    
-    async def _parse_content_node(self, state: AgentState) -> AgentState:
-        """Parse and structure the content for analysis."""
-        if state.get("error"):
-            return state
-        
-        input_type = state["input_type"]
-        raw_content = state["raw_content"]
-        
-        # If we already have swagger content, skip parsing
-        if state.get("swagger_content"):
-            return state
-        
-        # Try to extract structured information from unstructured content
-        if input_type in ["webpage", "text", "doc_file"]:
-            parse_prompt = f"""
-            Analyze the following API documentation and extract structured information:
-            
-            CONTENT:
-            {raw_content[:5000]}...
-            
-            Extract and format as JSON:
-            1. api_name: The name of the API
-            2. base_url: The base URL for API calls
-            3. authentication: How to authenticate (API key, OAuth, etc.)
-            4. endpoints: List of endpoints with methods, paths, parameters, responses
-            5. data_models: Any data structures or schemas mentioned
-            6. examples: Code examples or request/response samples
-            7. rate_limits: Any rate limiting information
-            8. additional_info: Any other relevant details
-            
-            If you can't find specific information, use "not_specified" as the value.
-            Focus on extracting concrete API implementation details.
-            """
-            
-            messages = [
-                SystemMessage(content="You are an expert at parsing API documentation and extracting structured information from unstructured text."),
-                HumanMessage(content=parse_prompt)
-            ]
-            
-            try:
-                response = await self.llm.ainvoke(messages)
-                
-                # Try to parse as JSON
-                try:
-                    parsed_info = json.loads(response.content)
-                    state["analysis"] = {"parsed_documentation": parsed_info}
-                except json.JSONDecodeError:
-                    # If JSON parsing fails, store as raw analysis
-                    state["analysis"] = {"raw_parsing": response.content}
-                
-                state["messages"].append(response)
-                
-            except Exception as e:
-                state["error"] = f"Failed to parse content: {str(e)}"
-        
-        return state
-    
-    async def _analyze_api_node(self, state: AgentState) -> AgentState:
-        """Analyze API documentation to understand structure and generate insights."""
-        if state.get("error"):
-            return state
-        
-        # Determine what content we have
-        swagger_content = state.get("swagger_content", {})
-        raw_content = state.get("raw_content", "")
-        input_type = state["input_type"]
-        existing_analysis = state.get("analysis", {})
-        
-        if swagger_content:
-            # We have structured Swagger/OpenAPI content
-            analysis_prompt = f"""
-            Analyze the following Swagger/OpenAPI documentation and provide a structured analysis:
-            
-            {json.dumps(swagger_content, indent=2)}
-            
-            Please provide:
-            1. API overview (title, version, base URL)
-            2. Authentication methods
-            3. ALL endpoints and their purposes
-            4. Data models/schemas
-            5. Key patterns and conventions
-            
-            Format as JSON with keys: overview, auth, endpoints, models, patterns
-            """
+        if result.get("error"):
+            self.logger.info(f"❌ Generation failed: {result['error']}")
         else:
-            # We have unstructured content that was parsed
-            analysis_prompt = f"""
-            Based on the following API documentation content, provide a comprehensive analysis:
+            self.logger.info("✅ Generation successful!")
             
-            INPUT TYPE: {input_type}
+            # Show validation results if available
+            validation = result.get("validation_results", {})
+            if validation.get("quality_score"):
+                score = validation['quality_score']
+                score_emoji = "🟢" if score >= 8 else "🟡" if score >= 6 else "🔴"
+                self.logger.info(f"{score_emoji} Final Quality Score: {score}/10")
             
-            RAW CONTENT:
-            {raw_content[:4000]}...
+            if validation.get("endpoint_count"):
+                self.logger.info(f"🔗 Total Endpoints: {validation['endpoint_count']}")
+                
+            if validation.get("model_count"):
+                self.logger.info(f"📦 Total Models: {validation['model_count']}")
             
-            EXISTING PARSED INFO:
-            {json.dumps(existing_analysis, indent=2)}
+            # Show if code was fixed
+            if result.get("fixed"):
+                self.logger.info("🔧 Code was automatically fixed!")
             
-            Provide a structured analysis including:
-            1. API overview (name, purpose, base URL if found)
-            2. Authentication methods mentioned
-            3. All API endpoints, methods, and parameters you can identify
-            4. Data models, request/response formats
-            5. Usage patterns and conventions
-            6. Rate limits or restrictions
-            7. Code examples if present
-            
-            Be thorough and extract as much structured information as possible.
-            Format as JSON with keys: overview, auth, endpoints, models, patterns, examples, limitations
-            """
+            # Final recommendations
+            critical_issues = validation.get("critical_blocking_issues", [])
+            if not critical_issues:
+                self.logger.info("🚀 Client is ready for production use!")
+            else:
+                self.logger.info("⚠️  Some issues may remain - review the generated code")
         
-        messages = [
-            SystemMessage(content="You are an expert API analyst. Analyze documentation and provide structured insights for API client generation."),
-            HumanMessage(content=analysis_prompt)
+        self.logger.info("🎉 " + "="*70)
+        self.logger.info("")
+    
+    # Backward compatibility
+    async def generate_from_url(self, swagger_url: str) -> Dict[str, Any]:
+        """Generate API client from Swagger URL (backward compatibility)."""
+        return await self.generate_from_swagger_url(swagger_url)
+    
+    async def generate_from_source(self, input_source: str) -> Dict[str, Any]:
+        """Generate API client from source (backward compatibility)."""
+        return await self.generate_from_swagger_url(input_source)
+    
+    def _extract_swagger_urls_from_content(self, content: str, base_url: str) -> List[str]:
+        """Extract potential Swagger/OpenAPI URLs from content."""
+        import re
+        
+        urls = []
+        
+        # Look for common patterns in the content
+        patterns = [
+            r'swagger\.json["\']?\s*:\s*["\']([^"\']+)["\']',
+            r'openapi\.json["\']?\s*:\s*["\']([^"\']+)["\']',
+            r'swagger\.yaml["\']?\s*:\s*["\']([^"\']+)["\']',
+            r'openapi\.yaml["\']?\s*:\s*["\']([^"\']+)["\']',
+            r'href\s*=\s*["\']([^"\']*swagger\.json[^"\']*)["\']',
+            r'href\s*=\s*["\']([^"\']*openapi\.json[^"\']*)["\']',
+            r'href\s*=\s*["\']([^"\']*swagger\.yaml[^"\']*)["\']',
+            r'href\s*=\s*["\']([^"\']*openapi\.yaml[^"\']*)["\']',
+            r'url\s*[=:]\s*["\']([^"\']*swagger[^"\']*)["\']',
+            r'url\s*[=:]\s*["\']([^"\']*openapi[^"\']*)["\']',
         ]
         
-        try:
-            response = await self.llm.ainvoke(messages)
-            
-            # Try to parse as JSON, fallback to text
-            try:
-                analysis = json.loads(response.content)
-            except json.JSONDecodeError:
-                analysis = {"raw_analysis": response.content}
-            
-            # Merge with existing analysis
-            if existing_analysis:
-                analysis.update(existing_analysis)
-            
-            state["analysis"] = analysis
-            state["messages"].append(response)
-            
-        except Exception as e:
-            state["error"] = f"Failed to analyze API documentation: {str(e)}"
+        for pattern in patterns:
+            matches = re.findall(pattern, content, re.IGNORECASE)
+            for match in matches:
+                if not match.startswith('http'):
+                    if match.startswith('/'):
+                        urls.append(match)
+                    else:
+                        urls.append('/' + match)
+                else:
+                    urls.append(match)
         
-        return state
+        return urls
+    
+    def _is_valid_swagger_content(self, content: Dict[str, Any]) -> bool:
+        """Check if the content is a valid Swagger/OpenAPI specification."""
+        if not isinstance(content, dict):
+            return False
+        
+        # Check for Swagger 2.0
+        if content.get('swagger') == '2.0' and 'paths' in content:
+            return True
+        
+        # Check for OpenAPI 3.x
+        if content.get('openapi') and content.get('openapi').startswith('3.') and 'paths' in content:
+            return True
+        
+        # Check for basic structure that looks like an API spec
+        if 'paths' in content and isinstance(content['paths'], dict):
+            return True
+        
+        return False
+    
+    def _extract_api_details_from_text(self, llm_response: str, raw_content: str) -> Dict[str, Any]:
+        """Extract API details when JSON parsing fails."""
+        import re
+        
+        # Try to find key patterns in the LLM response and raw content
+        details = {
+            "base_url": "",
+            "auth": {"type": "none"},
+            "endpoints": [],
+            "models": {},
+            "client_name": "APIClient"
+        }
+        
+        # Look for base URL patterns
+        url_patterns = [
+            r'https?://[^\s"\'<>]+',
+            r'"base_url":\s*"([^"]+)"',
+            r'Base URL.*?:\s*(https?://[^\s]+)'
+        ]
+        
+        for pattern in url_patterns:
+            matches = re.findall(pattern, llm_response + " " + raw_content, re.IGNORECASE)
+            if matches:
+                details["base_url"] = matches[0] if isinstance(matches[0], str) else matches[0][0]
+                break
+        
+        # Look for endpoint patterns
+        endpoint_patterns = [
+            r'(GET|POST|PUT|DELETE)\s+(/[^\s<>"\']+)',
+            r'"path":\s*"([^"]+)".*?"method":\s*"([^"]+)"',
+            r'/(v\d+/[^\s<>"\']+)'
+        ]
+        
+        for pattern in endpoint_patterns:
+            matches = re.findall(pattern, llm_response + " " + raw_content, re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, tuple) and len(match) == 2:
+                    details["endpoints"].append({
+                        "method": match[0].upper(),
+                        "path": match[1],
+                        "params": {},
+                        "response_schema": {}
+                    })
+        
+        return details
     
     async def _generate_code_node(self, state: AgentState) -> AgentState:
-        """Generate Python API client code from analyzed documentation."""
+        """Generate Python API client code directly from Swagger/OpenAPI specification."""
         if state.get("error"):
             return state
         
         swagger_content = state.get("swagger_content", {})
         raw_content = state.get("raw_content", "")
-        analysis = state["analysis"]
-        input_type = state["input_type"]
         
-        # Determine API name for the client class
-        api_name = "API"
-        if swagger_content:
-            api_name = swagger_content.get('info', {}).get('title', 'API')
-        elif analysis.get('overview', {}).get('name'):
-            api_name = analysis['overview']['name']
-        elif analysis.get('parsed_documentation', {}).get('api_name'):
-            api_name = analysis['parsed_documentation']['api_name']
+        if not swagger_content and not raw_content:
+            state["error"] = "No Swagger/OpenAPI content available for code generation"
+            return state
         
-        client_name = self.config.client_name or api_name.replace(' ', '').replace('-', '') + 'Client'
+        # Use the raw Swagger JSON/YAML content directly
+        swagger_text = raw_content if raw_content else json.dumps(swagger_content, indent=2)
         
-        # Create comprehensive code generation prompt
-        if swagger_content:
-            # We have structured Swagger content
-            content_section = f"""
-            SWAGGER CONTENT:
-            {json.dumps(swagger_content, indent=2)[:4000]}...
-            """
-        else:
-            # We have unstructured content
-            content_section = f"""
-            ORIGINAL DOCUMENTATION:
-            {raw_content[:3000]}...
-            
-            EXTRACTED ANALYSIS:
-            {json.dumps(analysis, indent=2)}
-            """
+        # Extract key info for better generation
+        host = swagger_content.get('host', 'N/A')
+        base_path = swagger_content.get('basePath', 'N/A')
+        expected_base_url = f"https://{host}{base_path}" if host != 'N/A' and base_path != 'N/A' else "unknown"
+        
+        self.logger.info("🤖 " + "="*70)
+        self.logger.info("🤖 GENERATING PYTHON API CLIENT")
+        self.logger.info("🤖 " + "="*70)
+        self.logger.info(f"🎯 Target API: {expected_base_url}")
+        self.logger.info("⚙️  Generating comprehensive Python client with all endpoints and models...")
+        self.logger.info("")
         
         code_prompt = f"""
-        You are a Python code generator. Generate ONLY valid Python code without any markdown formatting, explanations, or code blocks.
+You are an expert Python developer creating a production-ready API client from a Swagger/OpenAPI specification.
 
-        Based on this API documentation, generate a complete Python API client:
-        
-        INPUT TYPE: {input_type}
-        {content_section}
-        
-        REQUIREMENTS:
-        1. Generate ONLY Python code - no markdown, no explanations, no code blocks
-        2. Start directly with imports
-        3. Create Pydantic models for all data structures found in the documentation
-        4. Create a main client class: {client_name}
-        5. Make it {'async' if self.config.async_client else 'sync'}
-        6. Use httpx for HTTP requests
-        7. Include proper error handling and validation
-        8. Add comprehensive type hints and docstrings
-        9. Handle authentication as specified in the documentation
-        10. Implement ALL endpoints/methods mentioned in the documentation
-        11. Add request/response validation where possible
-        12. Include rate limiting handling if mentioned
-        13. End with a simple usage example in comments
-        
-        IMPORTANT NOTES:
-        - If the documentation is incomplete, make reasonable assumptions
-        - Focus on creating a practical, usable client
-        - Include error handling for common HTTP scenarios
-        - Add logging capabilities
-        - Make the client extensible and maintainable
-        
-        Generate clean, executable Python code only.
+SWAGGER/OPENAPI SPECIFICATION:
+{swagger_text}
+
+CRITICAL REQUIREMENTS - Follow these exactly:
+
+1. **BASE URL EXTRACTION AND DEFAULT**: 
+   - Extract the correct base URL from the spec: look for "host" + "basePath" OR "servers" array
+   - If host is "cve.circl.lu" and basePath is "/api", the base_url should be "https://cve.circl.lu/api"
+   - ALWAYS provide this as the DEFAULT value in the constructor
+   - Example: `def __init__(self, api_key: str, base_url: str = "https://cve.circl.lu/api"):`
+   - NEVER use placeholder URLs like "api.example.com"
+
+2. **FIX KWARGS SYNTAX**:
+   - In method signatures, use `**kwargs` NOT `kwargs`
+   - In the _request method: `async def _request(self, method: str, endpoint: str, **kwargs) -> Any:`
+   - In the request call: `response = await self.client.request(method, endpoint, headers=self.headers, **kwargs)`
+   - In method calls: `await self._request("GET", "/endpoint", params=params)`
+
+3. **HANDLE SPECIAL FIELD NAMES**:
+   - For fields starting with @ (like @ID, @Name), use Field aliases:
+   - Example: `id: str = Field(alias="@ID")` NOT `@ID: str`
+   - Import Field: `from pydantic import BaseModel, Field`
+
+4. **AUTHENTICATION**:
+   - Check "securityDefinitions" (Swagger 2.0) or "components.securitySchemes" (OpenAPI 3.x)
+   - If apiKey type, implement the correct header name
+   - Example: `self.headers = {{"X-API-KEY": api_key}}`
+
+5. **ALL ENDPOINTS WITH PROPER PARAMETERS**: 
+   - Implement EVERY endpoint found in the "paths" section
+   - For methods with optional parameters, use `**kwargs` properly:
+   - Example: `async def list_items(self, page: int = 1, per_page: int = 100, **kwargs) -> ItemsList:`
+   - Then: `params = {{"page": page, "per_page": per_page, **kwargs}}`
+
+6. **COMPLETE MODELS**:
+   - Create Pydantic models for ALL schemas in "definitions" or "components.schemas"
+   - Use correct Python types: string->str, integer->int, boolean->bool, array->List, object->Dict
+   - Handle special characters in field names with aliases
+
+7. **PROPER RETURN TYPES**:
+   - Don't return `None` for GET methods that return data
+   - Use the correct Pydantic model as return type
+   - Example: `async def get_vulnerability(self, vulnerability_id: str) -> Vulnerability:`
+
+8. **PARAMETER HANDLING**:
+   - For pagination: `page: int = 1, per_page: int = 100`
+   - For filtering: `**kwargs` to handle optional filters
+   - Properly merge parameters: `params = {{"page": page, "per_page": per_page, **kwargs}}`
+
+Generate the complete client following these exact patterns. Include ALL endpoints, ALL models, and fix ALL syntax issues.
+
+Return ONLY clean Python code without markdown formatting.
         """
         
         messages = [
-            SystemMessage(content="You are an expert Python developer specializing in API client generation. Generate clean, well-documented, production-ready code that works with any type of API documentation."),
+            SystemMessage(content="You are an expert Python developer specializing in creating accurate API clients from Swagger/OpenAPI specifications. You MUST extract the correct base URL, implement ALL endpoints, fix syntax issues, and create complete Pydantic models. Never use placeholder URLs or incomplete implementations."),
             HumanMessage(content=code_prompt)
         ]
         
         try:
             response = await self.llm.ainvoke(messages)
-            raw_code = response.content
             
-            # Clean up the generated code
-            generated_code = self._clean_generated_code(raw_code)
+            self.logger.info("📝 " + "="*70)
+            self.logger.info("📝 LLM CODE GENERATION RESPONSE")
+            self.logger.info("📝 " + "="*70)
+            # Show a truncated preview instead of full response
+            preview = response.content[:500] + "..." if len(response.content) > 500 else response.content
+            self.logger.info(preview)
+            self.logger.info("📝 " + "="*70)
+            self.logger.info("")
+            
+            generated_code = self._clean_generated_code(response.content)
+            
+            # Quick analysis with nice formatting
+            class_count = generated_code.count('class ')
+            method_count = generated_code.count('async def ')
+            
+            self.logger.info("✅ Code generation completed!")
+            self.logger.info(f"   📋 Classes generated: {class_count}")
+            self.logger.info(f"   🔧 Methods generated: {method_count}")
+            self.logger.info(f"   📄 Total lines: {len(generated_code.splitlines())}")
+            self.logger.info("")
             
             state["generated_code"] = generated_code
             state["messages"].append(response)
             
         except Exception as e:
-            state["error"] = f"Failed to generate code: {str(e)}"
+            error_msg = f"Failed to generate code: {str(e)}"
+            self.logger.info(f"❌ {error_msg}")
+            state["error"] = error_msg
         
         return state
     
@@ -469,47 +531,446 @@ class APIGenerationAgent:
         return clean_code.strip()
     
     async def _validate_code_node(self, state: AgentState) -> AgentState:
-        """Validate the generated code for syntax and best practices."""
+        """Validate the generated code for syntax and basic functionality."""
         if state.get("error"):
             return state
         
         generated_code = state["generated_code"]
         
-        # 1. Basic syntax validation
+        self.logger.info("🔍 " + "="*70)
+        self.logger.info("🔍 VALIDATING GENERATED CODE")
+        self.logger.info("🔍 " + "="*70)
+        
+        # Basic syntax validation
         try:
             compile(generated_code, '<generated>', 'exec')
             syntax_valid = True
             syntax_error = None
+            self.logger.info("✅ Syntax validation: PASSED")
         except SyntaxError as e:
             syntax_valid = False
             syntax_error = str(e)
+            self.logger.info(f"❌ Syntax validation: FAILED on line {e.lineno}")
+            self.logger.info(f"   Error: {syntax_error}")
         
-        # 2. Comprehensive testing using our testing framework
-        test_report = None
-        try:
-            from agentic_api.testing.client_tester import GeneratedClientTester
-            tester = GeneratedClientTester()
-            test_report = await tester.test_generated_client(generated_code)
-        except Exception as e:
-            print(f"Warning: Could not run comprehensive tests: {e}")
+        self.logger.info("🧠 Running comprehensive LLM validation...")
+        self.logger.info("")
         
-        # 3. LLM-based validation
+        # LLM-based validation
         validation_prompt = f"""
-        Review this generated Python API client code for:
-        1. Code quality and best practices
-        2. Type safety and error handling
-        3. Documentation completeness
-        4. API design patterns
-        5. Potential improvements
-        
-        CODE:
-        {generated_code}
-        
-        Provide feedback as JSON with keys: quality_score (1-10), issues, suggestions, approval
+Review this generated Python API client code and provide a detailed assessment.
+
+GENERATED CODE:
+{generated_code}
+
+Perform these CRITICAL checks:
+
+1. **BASE URL DEFAULT VALUE CHECK**:
+   - Does the constructor have a default base_url parameter?
+   - Look for: `def __init__(self, api_key: str, base_url: str = "https://...")`
+   - The default should be the REAL API URL, not a placeholder
+   - CRITICAL FAILURE if no default or if it contains "example.com"
+
+2. **KWARGS SYNTAX CHECK**:
+   - In _request method: Is it `**kwargs` or just `kwargs`?
+   - In method signatures: Is it `**kwargs` or just `kwargs`?
+   - In request calls: Is it `**kwargs` or just `kwargs`?
+   - CRITICAL FAILURE if `kwargs` is used without `**`
+
+3. **FIELD NAME VALIDATION**:
+   - Look for fields starting with @ (like @ID, @Name)
+   - Should use `Field(alias="@ID")` pattern
+   - CRITICAL FAILURE if raw @ symbols are used as field names
+
+4. **PARAMETER HANDLING**:
+   - Methods should properly merge parameters: `params = {{"page": page, **kwargs}}`
+   - Not: `params = {{"page": page, kwargs}}`
+   - CRITICAL FAILURE if kwargs not properly unpacked in params
+
+5. **IMPORTS CHECK**:
+   - Must include `from pydantic import BaseModel, Field` if using aliases
+   - Must include proper typing imports
+   - CRITICAL FAILURE if Field is used but not imported
+
+6. **RETURN TYPE VALIDATION**:
+   - GET methods should return proper model types, not None
+   - Methods should have meaningful return type annotations
+   - Warning if return types are missing or incorrect
+
+7. **AUTHENTICATION IMPLEMENTATION**:
+   - Should have proper header setup in constructor
+   - Should use correct header name (X-API-KEY, Authorization, etc.)
+
+8. **ENDPOINT COMPLETENESS**:
+   - Count implemented endpoints vs expected (should be 40+ for CVE API)
+   - Check if major categories are covered (vulnerability, browse, stats, etc.)
+
+Return JSON with:
+{{
+    "quality_score": 1-10,
+    "syntax_valid": true/false,
+    "base_url_has_default": true/false,
+    "base_url_is_real": true/false,
+    "base_url_found": "actual default URL in constructor",
+    "kwargs_syntax_correct": true/false,
+    "field_aliases_correct": true/false,
+    "has_proper_imports": true/false,
+    "parameter_handling_correct": true/false,
+    "endpoint_count": number,
+    "authentication_correct": true/false,
+    "model_count": number,
+    "critical_blocking_issues": ["issues that prevent the client from working"],
+    "syntax_errors": ["specific syntax problems"],
+    "field_name_errors": ["problems with @ symbols in field names"],
+    "kwargs_errors": ["specific kwargs usage problems"],
+    "missing_features": ["functionality gaps"],
+    "suggestions": ["specific actionable fixes"]
+}}
+
+Mark issues as CRITICAL if they would prevent the client from working at all.
         """
         
         messages = [
-            SystemMessage(content="You are a senior Python code reviewer. Evaluate code quality, patterns, and best practices."),
+            SystemMessage(content="You are a senior Python code reviewer specializing in API client validation. Focus on identifying critical issues like wrong URLs, syntax errors, missing endpoints, and incomplete implementations. Provide specific, actionable feedback."),
+            HumanMessage(content=validation_prompt)
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(messages)
+            
+            self.logger.info("� " + "="*70)
+            self.logger.info("📋 LLM VALIDATION RESULTS")
+            self.logger.info("📋 " + "="*70)
+            
+            try:
+                validation_results = json.loads(response.content)
+            except json.JSONDecodeError:
+                # Extract JSON if wrapped in markdown
+                import re
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', response.content, re.DOTALL)
+                if json_match:
+                    try:
+                        validation_results = json.loads(json_match.group(1))
+                    except json.JSONDecodeError:
+                        validation_results = {"raw_feedback": response.content, "parse_error": "Could not parse JSON"}
+                else:
+                    validation_results = {"raw_feedback": response.content, "parse_error": "No JSON found"}
+            
+            # Add syntax validation results
+            validation_results["syntax_valid"] = syntax_valid
+            if syntax_error:
+                validation_results["syntax_error"] = syntax_error
+            
+            # Pretty print validation summary
+            if "quality_score" in validation_results:
+                score = validation_results['quality_score']
+                score_emoji = "🟢" if score >= 8 else "🟡" if score >= 6 else "🔴"
+                self.logger.info(f"{score_emoji} Quality Score: {score}/10")
+            
+            if "endpoint_count" in validation_results:
+                self.logger.info(f"🔗 Endpoints Found: {validation_results['endpoint_count']}")
+                
+            if "model_count" in validation_results:
+                self.logger.info(f"📦 Models Found: {validation_results['model_count']}")
+            
+            if "critical_blocking_issues" in validation_results:
+                issues = validation_results['critical_blocking_issues']
+                if issues:
+                    self.logger.info(f"⚠️  Critical Issues Found: {len(issues)}")
+                    for i, issue in enumerate(issues, 1):
+                        self.logger.info(f"   {i}. {issue}")
+                else:
+                    self.logger.info("✅ No critical blocking issues found!")
+            
+            self.logger.info("")
+            
+            state["validation_results"] = validation_results
+            state["messages"].append(response)
+            
+        except Exception as e:
+            error_msg = f"Failed to validate code: {str(e)}"
+            self.logger.info(f"❌ {error_msg}")
+            state["error"] = error_msg
+        
+        return state
+    
+    async def _fix_code_node(self, state: AgentState) -> AgentState:
+        """Fix the code based on comprehensive validation results."""
+        if state.get("error"):
+            return state
+        
+        validation_results = state.get("validation_results", {})
+        generated_code = state["generated_code"]
+        
+        # Check validation from both basic and documentation validation
+        critical_issues = validation_results.get("critical_blocking_issues", [])
+        syntax_error = validation_results.get("syntax_error")
+        kwargs_errors = validation_results.get("kwargs_errors", [])
+        field_errors = validation_results.get("field_name_errors", [])
+        
+        # Also check documentation validation results
+        doc_validation = validation_results.get("documentation_validation", {})
+        critical_fixes_needed = doc_validation.get("critical_fixes_needed", [])
+        missing_endpoints = doc_validation.get("endpoint_validation", {}).get("missing_endpoints", [])
+        auth_issues = doc_validation.get("auth_validation", {}).get("issues", [])
+        
+        # Combine all issues
+        all_issues = critical_issues + critical_fixes_needed + auth_issues
+        if missing_endpoints:
+            all_issues.append(f"Missing {len(missing_endpoints)} endpoints from specification")
+        
+        # Only proceed if there are actual issues to fix
+        if not all_issues and not syntax_error and not kwargs_errors and not field_errors:
+            self.logger.info("✅ No critical issues found - code is ready to use!")
+            self.logger.info("")
+            return state
+        
+        self.logger.info("🔧 " + "="*70)
+        self.logger.info("🔧 FIXING CODE ISSUES")
+        self.logger.info("🔧 " + "="*70)
+        self.logger.info(f"🎯 Total issues to fix: {len(all_issues)}")
+        
+        # Show top issues
+        for i, issue in enumerate(all_issues[:3], 1):
+            self.logger.info(f"   {i}. {issue}")
+        if len(all_issues) > 3:
+            self.logger.info(f"   ... and {len(all_issues) - 3} more issues")
+        
+        self.logger.info("")
+        self.logger.info("⚙️  Applying comprehensive fixes...")
+        
+        # Prepare comprehensive fix prompt
+        fix_prompt = f"""
+You are a Python code expert fixing a broken API client. Your PRIMARY GOAL is to make this code FUNCTIONAL and EXECUTABLE.
+
+CURRENT BROKEN CODE:
+{generated_code}
+
+VALIDATION RESULTS:
+{json.dumps(validation_results, indent=2)}
+
+ALL ISSUES TO FIX:
+{chr(10).join([f"- {issue}" for issue in all_issues])}
+
+🚨 CRITICAL FUNCTIONAL REQUIREMENTS - FIX THESE FIRST:
+
+1. **KWARGS SYNTAX ERRORS** (BLOCKS EXECUTION):
+   - FIND: `async def _request(self, method: str, endpoint: str, kwargs)`
+   - REPLACE: `async def _request(self, method: str, endpoint: str, **kwargs)`
+   - FIND: `self.client.request(method, endpoint, headers=self.headers, kwargs)`
+   - REPLACE: `self.client.request(method, f"{{self.base_url}}{{endpoint}}", headers=self.headers, **kwargs)`
+   - This is CRITICAL - code will crash without this fix!
+
+2. **BASE URL CONCATENATION** (PREVENTS API CALLS):
+   - Ensure ALL requests use: `f"{{self.base_url}}{{endpoint}}"`
+   - Example: `await self.client.request("GET", f"{{self.base_url}}/pet/123", ...)`
+
+3. **MODEL INSTANTIATION ERRORS** (RUNTIME CRASHES):
+   - FIND: `return SomeModel(response_data)`
+   - REPLACE: `return SomeModel(**response_data)` (note the **)
+   - FIND: `[Model(item) for item in items]`
+   - REPLACE: `[Model(**item) for item in items]`
+
+4. **MISSING REQUIRED IMPORTS**:
+   - Ensure `from pydantic import BaseModel, Field` if Field aliases are used
+   - Add any missing typing imports
+
+5. **AUTHENTICATION HEADERS**:
+   - Check the specification for correct header names
+   - For Petstore: use `{{"api_key": api_key}}` not `{{"X-API-KEY": api_key}}`
+   - For CVE API: use `{{"X-API-KEY": api_key}}`
+
+6. **PYDANTIC COMPATIBILITY**:
+   - Replace `.dict()` with `.model_dump()` for Pydantic v2
+   - Or use `.dict()` consistently for Pydantic v1
+
+🎯 FUNCTIONALITY CHECKLIST - ENSURE EACH WORKS:
+
+✅ Constructor creates client instance without errors
+✅ _request method can make HTTP calls successfully  
+✅ Response parsing doesn't crash with type errors
+✅ Model instantiation works with actual API responses
+✅ All methods have correct parameter passing (**kwargs not kwargs)
+✅ Authentication headers match specification exactly
+✅ URL construction includes base_url properly
+
+📋 SECONDARY IMPROVEMENTS (after fixing critical issues):
+
+- Add proper error handling for HTTP status codes
+- Implement missing endpoints from specification
+- Fix return types from `None` to proper models for GET methods
+- Remove unnecessary Field aliases when field name matches JSON key
+- Add docstrings for better usability
+
+⚠️ VALIDATION STRATEGY:
+After each fix, mentally test:
+1. "Can Python import this code?" (syntax check)
+2. "Can I create a client instance?" (constructor check)  
+3. "Can I call client._request()?" (method signature check)
+4. "Will response parsing work?" (model instantiation check)
+
+Return ONLY the corrected Python code that is guaranteed to be functional.
+No explanations, no markdown formatting, just clean executable Python code.
+
+FOCUS: Make it work first, optimize later!
+        """
+        
+        messages = [
+            SystemMessage(content="You are a Python debugging expert specializing in making broken API clients functional. Your #1 priority is ensuring the code can execute without syntax errors, runtime crashes, or basic functionality failures. Focus on kwargs syntax, URL construction, model instantiation, and authentication headers. Return only working, executable Python code - no explanations or markdown."),
+            HumanMessage(content=fix_prompt)
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(messages)
+            
+            # Don't show the full LLM response to reduce clutter
+            self.logger.info("✅ Code fixes applied by LLM")
+            
+            fixed_code = response.content.strip()
+            
+            # Remove markdown formatting if present
+            if fixed_code.startswith("```python"):
+                fixed_code = fixed_code[9:]
+            if fixed_code.startswith("```"):
+                fixed_code = fixed_code[3:]
+            if fixed_code.endswith("```"):
+                fixed_code = fixed_code[:-3]
+            fixed_code = fixed_code.strip()
+            
+            # Quick syntax validation of fixed code
+            try:
+                compile(fixed_code, '<fixed>', 'exec')
+                
+                # Quick analysis of the fixed code
+                class_count = fixed_code.count('class ')
+                method_count = fixed_code.count('async def ')
+                endpoint_count = fixed_code.count('await self._request')
+                
+                self.logger.info("✅ Fixed code passed syntax validation!")
+                self.logger.info(f"   📋 Classes: {class_count}")
+                self.logger.info(f"   🔧 Methods: {method_count}")
+                self.logger.info(f"   🌐 API Calls: {endpoint_count}")
+                self.logger.info("")
+                
+                state["generated_code"] = fixed_code
+                state["fixed"] = True
+            except SyntaxError as e:
+                self.logger.info(f"❌ Fixed code still has syntax errors: {str(e)}")
+                self.logger.info(f"   Error on line {e.lineno}")
+                # Keep original code if fix failed
+                state["fix_error"] = f"Fixed code has syntax errors: {str(e)}"
+            
+            state["messages"].append(response)
+            
+        except Exception as e:
+            error_msg = f"Failed to fix code: {str(e)}"
+            self.logger.info(f"❌ {error_msg}")
+            state["error"] = error_msg
+        
+        return state
+    
+    async def _validate_against_docs_node(self, state: AgentState) -> AgentState:
+        """Validate the generated client against the original Swagger/OpenAPI specification and suggest improvements."""
+        if state.get("error"):
+            return state
+        
+        generated_code = state["generated_code"]
+        swagger_content = state.get("swagger_content", {})
+        analysis = state.get("analysis", {})
+        input_source = state["input_source"]
+        
+        validation_prompt = f"""
+You are validating a generated Python API client against its Swagger/OpenAPI specification.
+
+ORIGINAL SWAGGER/OPENAPI SPECIFICATION:
+{json.dumps(swagger_content, indent=2)[:4000]}
+
+EXTRACTED ANALYSIS:
+{json.dumps(analysis, indent=2)}
+
+GENERATED API CLIENT CODE:
+{generated_code}
+
+INPUT SOURCE: {input_source}
+
+Perform a comprehensive validation and return JSON with specific findings:
+
+1. **URL Validation**: 
+   - Check if base URL is correctly extracted and implemented
+   - Verify against 'host', 'basePath', or 'servers' in spec
+
+2. **Endpoint Validation**:
+   - Compare all paths in spec vs implemented methods
+   - Verify HTTP methods match exactly
+   - Check parameter mapping (query, path, header, body)
+   - Validate required vs optional parameters
+
+3. **Authentication Validation**:
+   - Check if auth scheme matches specification
+   - Verify implementation of security definitions
+
+4. **Model Validation**:
+   - Compare Pydantic models against schema definitions
+   - Check field types and requirements
+   - Verify model relationships
+
+5. **Code Quality**:
+   - Check for proper error handling
+   - Validate type hints and documentation
+   - Review code structure and patterns
+
+Return JSON with this structure:
+{{
+    "validation_score": 1-10,
+    "url_validation": {{
+        "correct": true/false,
+        "expected": "correct_url",
+        "found": "implemented_url",
+        "issue": "description if incorrect"
+    }},
+    "endpoint_validation": {{
+        "total_endpoints_in_spec": number,
+        "total_endpoints_implemented": number,
+        "missing_endpoints": ["list of missing paths"],
+        "incorrect_methods": ["endpoint: expected vs found"],
+        "parameter_issues": ["specific parameter problems"]
+    }},
+    "auth_validation": {{
+        "correct": true/false,
+        "expected_scheme": "auth type from spec",
+        "implemented_scheme": "auth type in code",
+        "issues": ["specific auth problems"]
+    }},
+    "model_validation": {{
+        "models_in_spec": number,
+        "models_implemented": number,
+        "missing_models": ["ModelName1", "ModelName2"],
+        "incorrect_models": ["model: field issues"],
+        "type_mismatches": ["specific type problems"]
+    }},
+    "code_quality": {{
+        "has_error_handling": true/false,
+        "has_type_hints": true/false,
+        "has_documentation": true/false,
+        "follows_conventions": true/false,
+        "issues": ["code quality problems"]
+    }},
+    "critical_fixes_needed": [
+        "Most important fix 1",
+        "Most important fix 2"
+    ],
+    "suggested_improvements": [
+        "Improvement suggestion 1",
+        "Improvement suggestion 2"
+    ],
+    "overall_assessment": "Detailed assessment of the generated client"
+}}
+
+Be specific about what's wrong and provide actionable feedback for improvements.
+        """
+        
+        messages = [
+            SystemMessage(content="You are a senior software engineer specializing in API client validation. Provide detailed, actionable feedback on code quality and spec compliance."),
             HumanMessage(content=validation_prompt)
         ]
         
@@ -517,31 +978,29 @@ class APIGenerationAgent:
             response = await self.llm.ainvoke(messages)
             
             try:
-                validation_results = json.loads(response.content)
+                doc_validation = json.loads(response.content)
             except json.JSONDecodeError:
-                validation_results = {"raw_feedback": response.content}
+                # Try to extract JSON from markdown
+                import re
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', response.content, re.DOTALL)
+                if json_match:
+                    doc_validation = json.loads(json_match.group(1))
+                else:
+                    doc_validation = {
+                        "validation_score": 5,
+                        "raw_feedback": response.content,
+                        "error": "Could not parse validation JSON"
+                    }
             
-            validation_results["syntax_valid"] = syntax_valid
-            if syntax_error:
-                validation_results["syntax_error"] = syntax_error
+            # Merge with existing validation results
+            existing_validation = state.get("validation_results", {})
+            existing_validation["documentation_validation"] = doc_validation
             
-            # Add test report if available
-            if test_report:
-                validation_results["test_report"] = {
-                    "overall_score": test_report.overall_score,
-                    "syntax_valid": test_report.syntax_valid,
-                    "imports_valid": test_report.imports_valid,
-                    "has_main_class": test_report.has_main_class,
-                    "method_count": test_report.method_count,
-                    "model_count": test_report.model_count,
-                    "recommendations": test_report.recommendations
-                }
-            
-            state["validation_results"] = validation_results
+            state["validation_results"] = existing_validation
             state["messages"].append(response)
             
         except Exception as e:
-            state["error"] = f"Failed to validate code: {str(e)}"
+            state["error"] = f"Failed to validate against documentation: {str(e)}"
         
         return state
     

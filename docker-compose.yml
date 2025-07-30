@@ -1,0 +1,46 @@
+services:
+  agentic-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentic-api
+    environment:
+      # Add your OpenAI API key here or via .env file
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Optional: Override default model
+      - AGENTIC_MODEL=${AGENTIC_MODEL:-gpt-4o-mini}
+      # Optional: Override temperature
+      - AGENTIC_TEMPERATURE=${AGENTIC_TEMPERATURE:-0.1}
+    volumes:
+      # Mount current working directory for generated clients
+      - .:/app/workspace
+      # Mount examples for easy access
+      - ./examples:/app/examples:ro
+    working_dir: /app/workspace
+    command: ["bash"]
+    # Enable interactive mode
+    stdin_open: true
+    tty: true
+    
+  # Development version with live code mounting
+  agentic-api-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentic-api-dev
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - AGENTIC_MODEL=${AGENTIC_MODEL:-gpt-4o-mini}
+      - AGENTIC_TEMPERATURE=${AGENTIC_TEMPERATURE:-0.1}
+      # Enable development mode
+      - PYTHONPATH=/app/src
+    volumes:
+      # Mount current working directory and source code for development
+      - .:/app/workspace
+      - ./src:/app/src
+      - ./examples:/app/examples
+      - ./tests:/app/tests
+    working_dir: /app/workspace
+    command: ["bash"]
+    stdin_open: true
+    tty: true
