@@ -20,7 +20,6 @@ RUN apt-get update && apt-get install -y \
 # Copy project files
 COPY pyproject.toml ./
 COPY src/ ./src/
-COPY examples/ ./examples/
 
 # Install Python dependencies
 RUN pip install --upgrade pip setuptools wheel && \
