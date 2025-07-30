@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: agentic-api
     environment:
-      # Add your OpenAI API key here or via .env file
+      # Add your OpenAI API key here
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       # Optional: Override default model
       - AGENTIC_MODEL=${AGENTIC_MODEL:-gpt-4o-mini}

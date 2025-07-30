@@ -52,10 +52,6 @@ clean:
 	docker-compose down --rmi all --volumes --remove-orphans
 	docker system prune -f
 
-# Build and test
-test: build
-	docker-compose run --rm agentic-api python -m pytest tests/ -v
-
 # Example generation commands
 example-petstore:
 	docker-compose run --rm agentic-api agentic-api generate "https://petstore.swagger.io/v2/swagger.json" --client-name PetStoreClient
