@@ -8,7 +8,7 @@ Generate high-quality Python API clients from Swagger/OpenAPI documentation usin
 
 - **🔍 Smart Analysis**: Automatically parses and understands Swagger JSON documentation
 - **🐍 Clean Code**: Generates typed, async Python clients with proper error handling
-- **🧪 Auto-Testing**: Validates generated code with comprehensive quality scoring (typically 8.5-9.5/10)
+- **🧪 Auto-Testing**: Validates generated code with comprehensive quality scoring
 - **🚀 Ready to Use**: Produces API clients you can use immediately
 
 ## 🚀 Quick Start Guide
@@ -55,12 +55,10 @@ make generate URL=https://petstore.swagger.io/v2/swagger.json
 ### Step 4: Use Your Generated Client
 
 The generated Python client will appear in your current directory with:
-- Complete API coverage
+- API coverage
 - Async/await support  
 - Type hints
 - Error handling
-- Documentation
-- Usage examples
 
 ## 📋 Prerequisites
 
@@ -97,15 +95,6 @@ OPENAI_API_KEY=your-openai-api-key-here
 AGENTIC_MODEL=gpt-4o-mini
 AGENTIC_TEMPERATURE=0.1
 ```
-
-## 📁 Output
-
-Generated API clients include:
-- **Main client file**: Complete Python API client
-- **Documentation**: Usage examples and API reference  
-- **Type definitions**: Full typing support
-- **Error handling**: Robust error management
-- **Async support**: Modern async/await patterns
 
 ## 🐛 Troubleshooting
 
