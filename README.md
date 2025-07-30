@@ -9,7 +9,7 @@ Generate high-quality Python API clients from Swagger/OpenAPI documentation usin
 - **🔍 Smart Analysis**: Automatically parses and understands Swagger JSON documentation
 - **🐍 Clean Code**: Generates typed, async Python clients with proper error handling
 - **🧪 Auto-Testing**: Validates generated code with comprehensive quality scoring (typically 8.5-9.5/10)
-- **🚀 Ready to Use**: Produces production-ready API clients you can use immediately
+- **🚀 Ready to Use**: Produces API clients you can use immediately
 
 ## 🚀 Quick Start Guide
 
@@ -39,8 +39,8 @@ make build
 docker-compose run --rm agentic-api
 
 # Inside the container, generate clients:
-agentic-api generate "https://petstore.swagger.io/v2/swagger.json"
-agentic-api generate "https://cve.circl.lu/api/swagger.json"
+agentic-api generate "https://petstore.swagger.io/v2/swagger.json" --client-name "<CLIENT_NAME>"
+agentic-api generate "https://cve.circl.lu/api/swagger.json" --client-name "<CLIENT_NAME>"
 
 # Exit when done
 exit
@@ -73,8 +73,7 @@ The generated Python client will appear in your current directory with:
 ```bash
 # Popular APIs that work great:
 make generate URL=https://petstore.swagger.io/v2/swagger.json
-make generate URL=https://cve.circl.lu/api/swagger.json  
-make generate URL=https://api.apis.guru/v2/specs/github.com/1.1.4/swagger.json
+make generate URL=https://cve.circl.lu/api/swagger.json 
 
 # The generated client will be saved as a Python file in your current directory
 ```
@@ -128,15 +127,40 @@ docker-compose run --rm agentic-api env | grep OPENAI
 - Test the URL in your browser first
 - Some APIs require authentication headers
 
-## 🚀 Advanced Usage
+## 🎯 Using Your Generated API Client
 
-For development or customization:
-```bash
-# Development mode with live code mounting
-docker-compose run --rm agentic-api-dev
+Once you've generated an API client, you can use it in any Python program of your own:
 
-# Custom model configuration  
-AGENTIC_MODEL=gpt-4 make generate URL=your-swagger-url.json
+### Simple Usage
+
+1. **Import the generated client** into your Python code
+2. **Create a client instance** with your API credentials  
+3. **Call any function** from the client in your code
+
+```python
+# Example: Using a generated client
+import asyncio
+from your_generated_client import APIClient
+
+async def main():
+    # Create client instance
+    client = APIClient(api_key="your-api-key")
+    
+    # Call any function from the generated client
+    result = await client.list_items()
+    print(f"Got {len(result.data)} items")
+    
+    # Close when done
+    await client.close()
+
+asyncio.run(main())
 ```
 
-That's it! You now have a powerful AI agent that generates production-ready API clients from any Swagger JSON specification. 🎉
+### Install Dependencies
+
+Your generated client needs these packages:
+```bash
+pip install httpx pydantic
+```
+
+That's it! The generated client is ready to use in any Python project. All functions are documented and include proper error handling, type hints, and async support. 🚀
