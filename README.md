@@ -2,7 +2,7 @@
 
 Generate high-quality Python API clients from Swagger/OpenAPI documentation using advanced AI agents.
 
-> **⚠️ Important**: This agent accepts **ONLY swagger.json based documents**. Other input types (OpenAPI YAML, raw text, etc.) have been tested and provide useless results. Please ensure your API documentation is in swagger.json format.
+> **⚠️ Important**: This agent accepts **ONLY swagger.json based documents**. Other input types (web pages, raw text, etc.) have been tested and provide useless results. Please ensure your API documentation is in swagger.json format.
 
 ## ✨ What It Does
 
